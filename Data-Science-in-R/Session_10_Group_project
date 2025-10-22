@@ -1295,10 +1295,10 @@ model_comp %>%
 ```
 
 
-As it can be seen in the barplot, the best model is the XGBoost model,
-with a ROC-AUC of 0.99, followed by the Random Forest model with a
-ROC-AUC of 0.98. The Logistic Regression model has a ROC-AUC of 0.96,
-while the Decision Tree and KNN models have a ROC-AUC of 0.95 and 0.94
+As it can be seen in the barplot, the best model is the Random Forest model,
+with a ROC-AUC of 0.99, followed by the XGBoost model with a
+ROC-AUC of 0.98. The Logistic Regression model has a ROC-AUC of 0.84,
+while the Decision Tree and KNN models have a ROC-AUC of 0.88 and 0.6
 respectively.
 
 Moreover, in terms of time, XGBoost is the fastest model to fit, taking
