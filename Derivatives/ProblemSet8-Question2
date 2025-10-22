@@ -1,0 +1,435 @@
+# QUESTION 2 --------------------------------------------------------------
+set.seed(13)
+# Data ----
+S0 <- 100
+K <- 100
+sigma <- 0.30
+t <- 1
+r <- 0.03 # continuously compounded
+
+# We are having 252 business days
+business_days <- 252
+h <- 1/business_days
+# And 100 different simulations
+nsim <- 100
+
+# Let's create a matrix where we will store each Monte Carlo path
+MCsims <- matrix(0, nrow = business_days, ncol = nsim)
+# The first value for ALL simulations has to be S0=100
+MCsims[1,] <- rep(S0,nsim)
+  
+# Now let's start filling up our matrix
+for(j in 1:nsim){
+  for (i in 1:(business_days-1)){
+    MCsims[i+1,j] <- MCsims[i,j]*exp((r-(sigma^2)/2)*h+sigma*sqrt(h)*rnorm(1))
+  }
+}
+
+# Let's plot it to see how it looks
+upperbound <- max(MCsims)
+lowerbound <- min(MCsims)
+plot(MCsims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Montecarlo simulations", xlab="Days", ylab="Stock price")
+for(j in 2:nsim){
+  lines(MCsims[,j], col=j)
+  }
+
+# a) Standard option ------------------------------------------------------
+# We are assuming such call is EUROPEAN (can't exercise until maturity)
+
+# Let's first define the expected payoff for each of the 100 simulations.
+# We know the expected payoff of an European call is given by c=max{ST-K,0}
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(MCsims[business_days,j]-K,0)
+}
+
+# The prices of the call will be given by:
+#exp(-rT)*1/nsim*sum(expected_payoffs)
+call_price_MC<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option is: ",round(call_price_MC,2)))
+
+# b) Option with sweetener ---------------------------------------------------
+K <- rep(0,nsim)
+sixmonths <- business_days/2
+
+# We want K to be 90 if S_sixmonths < S0 and 100 otherwise
+for(j in 1:nsim){
+  if(MCsims[sixmonths,j] < S0){
+    K[j]=90
+  }
+  else{
+    K[j]=100
+  }
+}
+
+# Now we compute the expected payoff
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(MCsims[business_days,j]-K[j],0)
+}
+
+# The price will be computed exactly the same as the one for the standard
+# option
+sweetener_price_MC<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the option with sweetener is: ",
+           round(sweetener_price_MC,2)))
+cat("The price is HIGHER than the standard option, for payoff is expected
+      to be higher. In other words, the 'sweetener' isn't for free, it has
+      a cost.")
+
+# c) Asian option ---------------------------------------------------------
+# First let's compute the average stock price for each simulation
+average_S <- rep(0,nsim)
+for(j in 1:nsim){
+  average_S[j] <- mean(MCsims[,j])
+}
+
+# K is 100 again for all simulations
+K <- 100
+
+# Now we compute the expected payoff. This is given by:
+# max{average_S-K,0}
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(average_S[j]-K,0)
+}
+
+# The price of the Asian option will be given by:
+Asian_price_MC<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the Asian option is: ",round(Asian_price_MC,2)))
+
+# Why is the price lower? Is it that average prices are lower than prices at 
+# maturity?
+higherprices <- 0
+for(j in 1:nsim){
+  if(average_S[j]>MCsims[business_days,j]){
+    higherprices <- higherprices +1
+  }
+}
+higherprices
+# We can see that only in 44 of the 100 simulations the average price 
+# is higher than the price at maturity, in the other half, the average
+# price is lower and that's what brings the price down
+cat("The price is LOWER than the standard option, for the average price
+is lower than the price at maturity more than half of the cases.")
+
+# d) Stochastic volatility -----------------------------------------------
+# Data----
+S0 <- 100
+sigma0 <- 0.30
+sigmabar <- 0.30
+KAPPA <- 2
+GAMMA <- 0.1
+mu <- 0.03
+r <- 0.03
+
+# Let's create two matrices where we will store each Stochastic Volatility 
+# path and each price path
+SVsims <- matrix(0, nrow = business_days, ncol = nsim)
+HestonSims <- matrix(0, nrow = business_days, ncol = nsim)
+
+# The first value for ALL variances has to be sigma0^2
+SVsims[1,]<- rep(sigma0^2,nsim)
+
+# The first value for ALL prices has to be S0=100
+HestonSims[1,] <- rep(S0,nsim)
+
+# Now let's start filling up our matrices
+for(j in 1:nsim){
+  for (i in 1:(business_days-1)){
+    HestonSims[i+1,j] <- HestonSims[i,j] + HestonSims[i,j]*mu*h +
+                        HestonSims[i,j]* sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+    SVsims[i+1,j] <- SVsims[i,j] + 2*(sigmabar^2-SVsims[i,j])*h + 
+                    GAMMA*sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+  }
+}
+
+# How does stochastic volatility look like? Let's plot it...
+upperbound <- max(SVsims)
+lowerbound <- min(SVsims)
+plot(SVsims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Stochastic Volatility", xlab="Days", ylab="Variance")
+for(j in 2:nsim){
+  lines(SVsims[,j], col=j)
+}
+
+# How do prices following stochastic volatility look like? Let's plot them...
+upperbound <- max(HestonSims)
+lowerbound <- min(HestonSims)
+plot(HestonSims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Prices following stochastic volatility", xlab="Days", 
+     ylab="Price")
+for(j in 2:nsim){
+  lines(HestonSims[,j], col=j)
+}
+
+# Now let's compute the prices of different call options
+# Call w/ K=100 ----
+# We will assume, once again, that the option is European
+K <- 100
+
+# Let's first define the expected payoff.
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+# The price of the call will be given by:
+call_100_SV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " using stochastic
+           volatility is: ",round(call_100_SV,2)))
+
+# Call w/ K=150 ----
+K <- 150
+
+# Let's first define the expected payoff.
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+# The prices of the call will be given by:
+call_150_SV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " using stochastic
+           volatility is: ",round(call_150_SV,2)))
+
+# Call w/ K=900 ----
+K <- 900
+
+# Let's first define the expected payoff.
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+# The prices of the call will be given by:
+call_900_SV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " using stochastic
+           volatility is: ",round(call_900_SV,2)))
+
+# If gamma=0... ----
+# All other data stays the same, only gamma changes
+GAMMA <- 0
+
+# We repeat everything we did before...
+SVsims <- matrix(0, nrow = business_days, ncol = nsim)
+HestonSims <- matrix(0, nrow = business_days, ncol = nsim)
+SVsims[1,]<- rep(sigma0^2,nsim)
+HestonSims[1,] <- rep(S0,nsim)
+
+for(j in 1:nsim){
+  for (i in 1:(business_days-1)){
+    HestonSims[i+1,j] <- HestonSims[i,j] + HestonSims[i,j]*mu*h +
+      HestonSims[i,j]* sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+    SVsims[i+1,j] <- SVsims[i,j] + 2*(sigmabar^2-SVsims[i,j])*h + 
+      GAMMA*sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+  }
+}
+
+upperbound <- max(SVsims)
+lowerbound <- min(SVsims)
+plot(SVsims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Stochastic Volatility", xlab="Days", ylab="Variance")
+for(j in 2:nsim){
+  lines(SVsims[,j], col=j)
+} # Exactly, there is NO stochastic volatility. It remains constant.
+
+upperbound <- max(HestonSims)
+lowerbound <- min(HestonSims)
+plot(HestonSims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Prices without stochastic volatility", xlab="Days", ylab="Price")
+for(j in 2:nsim){
+  lines(HestonSims[,j], col=j)
+}
+
+# Call w/ K=100 ----
+K <- 100
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_100_woSV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " withou stochastic
+           volatility is: ",round(call_100_woSV,2)))
+
+# Call w/ K=150 ----
+K <- 150
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_150_woSV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " using stochastic
+           volatility is: ",round(call_150_woSV,2)))
+
+# Call w/ K=900 ----
+K <- 900
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_900_woSV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " using stochastic
+           volatility is: ",round(call_900_woSV,2)))
+
+# e) Increasing maturity --------------------------------------------------
+# Now we will have
+t <- 10
+h <- 1/business_days*t
+
+# Heston Model ------------------------------------------------------------
+# Everything else remains the same
+S0 <- 100
+sigma0 <- 0.30
+sigmabar <- 0.30
+KAPPA <- 2
+GAMMA <- 0.1
+mu <- 0.03
+r <- 0.03
+
+# We repeat all the process
+SVsims <- matrix(0, nrow = business_days, ncol = nsim)
+HestonSims <- matrix(0, nrow = business_days, ncol = nsim)
+SVsims[1,]<- rep(sigma0^2,nsim)
+HestonSims[1,] <- rep(S0,nsim)
+
+for(j in 1:nsim){
+  for (i in 1:(business_days-1)){
+    HestonSims[i+1,j] <- HestonSims[i,j] + HestonSims[i,j]*mu*h +
+      HestonSims[i,j]* sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+    SVsims[i+1,j] <- SVsims[i,j] + 2*(sigmabar^2-SVsims[i,j])*h + 
+      GAMMA*sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+  }
+}
+
+upperbound <- max(SVsims)
+lowerbound <- min(SVsims)
+plot(SVsims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Stochastic Volatility", xlab="Days", ylab="Variance")
+# Volatility is clearly higher
+for(j in 2:nsim){
+  lines(SVsims[,j], col=j)
+}
+
+upperbound <- max(HestonSims)
+lowerbound <- min(HestonSims)
+plot(HestonSims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Prices following stochastic volatility", xlab="Days", 
+     ylab="Price")
+for(j in 2:nsim){
+  lines(HestonSims[,j], col=j)
+}
+
+# Call w/ K=100 ----
+K <- 100
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_100_SV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " and maturity of 10
+           years using stochastic volatility is: ",round(call_100_SV,2)))
+
+# Call w/ K=150 ----
+K <- 150
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_150_SV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " and maturity of 10
+           years using stochastic volatility is: ",round(call_150_SV,2)))
+
+# Call w/ K=900 ----
+K <- 900
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_900_SV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " and maturity of 10
+           years using stochastic volatility is: ",round(call_900_SV,2)))
+
+# Black Scholes Model ----------------------------------------------------
+# All other data stays the same, only gamma changes
+GAMMA <- 0
+
+# We repeat everything we did before...
+SVsims <- matrix(0, nrow = business_days, ncol = nsim)
+HestonSims <- matrix(0, nrow = business_days, ncol = nsim)
+SVsims[1,]<- rep(sigma0^2,nsim)
+HestonSims[1,] <- rep(S0,nsim)
+
+for(j in 1:nsim){
+  for (i in 1:(business_days-1)){
+    HestonSims[i+1,j] <- HestonSims[i,j] + HestonSims[i,j]*mu*h +
+      HestonSims[i,j]* sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+    SVsims[i+1,j] <- SVsims[i,j] + 2*(sigmabar^2-SVsims[i,j])*h + 
+      GAMMA*sqrt(SVsims[i,j])*sqrt(h)*rnorm(1)
+  }
+}
+
+upperbound <- max(SVsims)
+lowerbound <- min(SVsims)
+plot(SVsims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Stochastic Volatility", xlab="Days", ylab="Variance")
+for(j in 2:nsim){
+  lines(SVsims[,j], col=j)
+} 
+
+upperbound <- max(HestonSims)
+lowerbound <- min(HestonSims)
+plot(HestonSims[,1],type = "l",ylim=c(lowerbound,upperbound),
+     main= "Prices without stochastic variance", xlab="Days", ylab="Price")
+for(j in 2:nsim){
+  lines(HestonSims[,j], col=j)
+}
+
+# Call w/ K=100 ---- 
+K <- 100
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_100_woSV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " and maturity of 10
+           years using Black Scholes Model is: ",round(call_100_woSV,2)))
+
+# Call w/ K=150 ---- 
+K <- 150
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_150_woSV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " and maturity of 10
+           years using Black Scholes Model is: ",round(call_150_woSV,2)))
+
+# Call w/ K=900 ---- 
+K <- 900
+
+expected_payoff <- rep(0,nsim)
+for(j in 1:nsim){
+  expected_payoff[j] <- max(HestonSims[business_days,j]-K,0)
+}
+
+call_900_woSV<-sum(expected_payoff)/nsim*exp(-r*t)
+cat(paste0("The price of the call option with K=", K, " and maturity of 10
+           years using Black Scholes Model is: ",round(call_900_woSV,2)))
