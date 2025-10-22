@@ -1,0 +1,235 @@
+# VALUATION OF ASSIAN OPTIONS VIA MONTE CARLO SIMULATION  ------------------
+# Assume Black Scholes
+# Stock follows a Geometric Brownian Motion
+
+# Data ----
+S0 <- 100
+mu <- 0.15 # per annum
+sigma <- 0.20 # per annum
+rf <-  0.08
+
+# We are having 250 business days
+business_days <- 250
+t <- 1 / business_days # one year
+
+# Defining our functions ---------------------------------------------------
+# For the Geometric Brownian Motion
+GBM <- function(N){
+  # Define our matrix to store results
+  W <- matrix(0, nrow = business_days, ncol = N) 
+  
+  # Filling up our matrix...
+  for(j in 1:N){
+    for (i in 1:(business_days)){
+      W[i,j] <- rnorm(1, mean = 0, sd = sqrt(t))
+    }
+  }
+  
+  return(W)
+}
+
+# For the simulations...
+MonteCarlo <- function(N, W){
+  N <- ncol(W)
+  # Create matrix to store results
+  MCsims <- matrix(0, nrow = business_days, ncol = N) # Matrix to store results
+  MCsims[1,] <- S0 # The first value for ALL simulations has to be S0=100
+  
+  # Filling up our matrix...
+  for(j in 1:N){
+    for (i in 2:(business_days)){
+      MCsims[i, j] <- MCsims[i - 1, j] *
+        exp((rf - 0.5 * sigma ^ 2) * t + sigma * W[i,j])
+    }
+  }
+  
+  # Plotting it...
+  plot(MCsims[,1], type = "l", ylim = range(MCsims),
+       main = paste("Monte Carlo Simulations (N =", N, ")"),
+       xlab = "Days", ylab = "Stock Price")
+  abline(h = 100, col = "black", lty = 2)
+  colors <- rainbow(N)
+  for(j in 2:N){
+    lines(MCsims[, j], col = colors[j])
+  }
+  
+  return(MCsims)
+}
+
+#For our outputs...
+outputs <- function(MCsims, N){
+  # Payoffs
+  Vt <- pmax(colMeans(MCsims) - 100, rep(0,N))
+  
+  # Price
+  price <- exp(-rf) * mean(Vt)
+  print(paste0("Estimated option value: ", round(price, 4),"."))
+  
+  # Standard error
+  SE <- sd(Vt) / sqrt(N)
+  print(paste0("Standard error is: ", round(SE,4), "."))
+  
+  # 95% confidence interval... 
+    lowerbound <- price - 1.96 * SE
+    upperbound <- price + 1.96 * SE
+    print(paste0("Confidence interval is given by: (", round(lowerbound,4),
+                 ", ", round(upperbound,4), ")."))
+    
+    return(price)
+}
+
+#For our antithethic outputs...
+antithetic <- function(N, MCsims1, MCsims_anti_1){
+  
+  # Payoffs
+  V1 <-  pmax(colMeans(MCsims1) - 100, rep(0,N))
+  V2 <-  pmax(colMeans(MCsims_anti_1) - 100, rep(0,N))
+  V1_hat <-  mean(V1)
+  V2_hat <-  mean(V2)
+  V_hat <- mean(c(V1_hat, V2_hat))
+  
+  # Price
+  price <- exp(-rf) * V_hat
+  print(paste0("Estimated option value: ", round(price, 4),"."))
+  
+  # Standard error:
+  SE <- sqrt(sum(((V1 + V2)/2 - V_hat) ^ 2) / (N * (N - 1))) 
+  print(paste0("Standard error is: ", round(SE,4), "."))
+  
+  # 95% confidence interval... 
+  lowerbound <- price - 1.96 * SE
+  upperbound <- price + 1.96 * SE
+  print(paste0("Confidence interval is given by: (", round(lowerbound,4),
+               ", ", round(upperbound,4), ")."))
+}
+
+# a) N = 5 sample paths ---------------------------------------------------
+set.seed(5)
+N <-  5
+W <- GBM(N)
+MCsims <- MonteCarlo(N, W) 
+outputs(MCsims, N)
+
+# RESULTS:
+# "Estimated option value: 10.0673."
+# "Standard error is: 4.6192."
+# "Confidence interval is given by: (1.0136, 19.1209)."
+
+# b) N = 10 sample paths ---------------------------------------------------
+set.seed(5) # To keep the same previous 5 ones
+N <- 10
+W <- GBM(N)
+MCsims_b <- MonteCarlo(N, W)  
+outputs(MCsims_b, N)
+
+# RESULTS:
+# "Estimated option value: 11.4622."
+# "Standard error is: 2.6683."
+# "Confidence interval is given by: (6.2323, 16.6921)."
+
+# c) N = 20 sample paths ---------------------------------------------------
+set.seed(5) # To keep the same previous 10 ones
+N <- 20
+W <- GBM(N)
+MCsims_c <- MonteCarlo(N, W) 
+outputs(MCsims_c, N)
+
+# RESULTS:
+# Estimated option value: 10.4077."
+# "Standard error is: 2.2718."
+# "Confidence interval is given by: (5.9549, 14.8605)."
+
+# d) N = 10 sample paths, antithetic variable technique --------------------
+# First part (same as b)
+set.seed(5) 
+N <- 10
+W <- GBM(N)
+MCsims_anti <- MonteCarlo(N, -W)  
+outputs(MCsims_anti, N)
+
+antithetic(N, MCsims_b, MCsims_anti)
+
+# RESULTS:
+# "Estimated option value: 6.2973."
+# "Standard error is: 1.0992."
+# "Confidence interval is given by: (4.1428, 8.4518)."
+
+# e) N = 20 sample paths, antithetic variable technique --------------------
+set.seed(5) 
+N <- 20
+W <- GBM(N)
+MCsims_anti <- MonteCarlo(N, -W)  
+outputs(MCsims_anti, N)
+
+antithetic(N, MCsims_c, MCsims_anti)
+
+# RESULTS:
+# "Estimated option value: 6.717."
+# "Standard error is: 0.9212."
+# "Confidence interval is given by: (4.9114, 8.5227)."
+
+# f) N = 100 sample paths ---------------------------------------------------
+set.seed(5) # To keep the same previous 20 ones
+N <- 100
+W <- GBM(N)
+MCsims <- MonteCarlo(N, W) 
+outputs(MCsims, N)
+
+# RESULTS:
+# Estimated option value: 7.2551."
+# "Standard error is: 0.9634."
+# "Confidence interval is given by: (5.3669, 9.1433)."
+
+# g) N = 500 sample paths ---------------------------------------------------
+set.seed(5) # To keep the same previous 100 ones
+N <- 500
+W <- GBM(N)
+MCsims_g <- MonteCarlo(N, W) 
+outputs(MCsims_g, N)
+
+# RESULTS:
+# Estimated option value: 5.5527."
+# "Standard error is: 0.3851."
+# "Confidence interval is given by: (4.798, 6.3074)."
+
+# h) N = 1000 sample paths ---------------------------------------------------
+set.seed(5) # To keep the same previous 500 ones
+N <- 1000
+W <- GBM(N)
+MCsims_h <- MonteCarlo(N, W) 
+outputs(MCsims_h, N)
+
+# RESULTS:
+# Estimated option value: 6.1249."
+# "Standard error is: 0.2759."
+# "Confidence interval is given by: (5.5842, 6.6656)."
+
+# i) N = 500 sample paths, antithetic variable technique --------------------
+set.seed(5) 
+N <- 500
+W <- GBM(N)
+MCsims_anti <- MonteCarlo(N, -W)  
+outputs(MCsims_anti, N)
+
+antithetic(N, MCsims_g, MCsims_anti)
+
+# RESULTS:
+# "Estimated option value: 6.482."
+# "Standard error is: 0.1834."
+# "Confidence interval is given by: (6.1226, 6.8415)."
+
+# j) N = 1000 sample paths, antithetic variable technique --------------------
+set.seed(5) 
+N <- 1000
+W <- GBM(N)
+MCsims_anti <- MonteCarlo(N, -W)  
+outputs(MCsims_anti, N)
+
+antithetic(N, MCsims_h, MCsims_anti)
+
+# RESULTS:
+# "Estimated option value: 6.4825."
+# "Standard error is: 0.1309."
+# "Confidence interval is given by: (6.2259, 6.7391)."
+
+
