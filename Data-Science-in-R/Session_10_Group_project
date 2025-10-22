@@ -1,0 +1,1463 @@
+---
+title: "Final Group project"
+author: "Paola Pavon, Maria Meneses, Yesenia Silva"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    theme: flatly
+    highlight: zenburn
+    number_sections: yes
+    toc: yes
+    toc_float: yes
+    code_folding: show
+  pdf_document:
+    toc: yes
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r}
+#| label: load-libraries
+#| echo: false # This option disables the printing of code (only output is displayed).
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(tidymodels)
+library(skimr)
+library(kknn)
+library(here)
+library(tictoc)
+library(vip)
+library(ranger)
+library(tidygeocoder)
+library(xgboost)
+library(ranger)
+library(vip)
+```
+
+# The problem: predicting credit card fraud
+
+The goal of the project is to predict fraudulent credit card
+transactions.
+
+## Obtain the data
+
+Transforming our output variable to a reordered factor is the first
+step.
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+
+# We need to do this to use use tidymodels:
+
+card_fraud <- read_csv(here::here("data", "card_fraud.csv")) %>% 
+
+  mutate(
+    # in tidymodels, outcome should be a factor  
+    is_fraud = factor(is_fraud),
+    
+    # first level is the event in tidymodels, so we need to reorder
+    is_fraud = relevel(is_fraud, ref = "1")
+         )
+
+glimpse(card_fraud)
+
+```
+
+The data dictionary is as follows
+
+| column(variable)      | description                                 |
+|-----------------------|---------------------------------------------|
+| trans_date_trans_time | Transaction DateTime                        |
+| trans_year            | Transaction year                            |
+| category              | category of merchant                        |
+| amt                   | amount of transaction                       |
+| city                  | City of card holder                         |
+| state                 | State of card holder                        |
+| lat                   | Latitude location of purchase               |
+| long                  | Longitude location of purchase              |
+| city_pop              | card holder's city population               |
+| job                   | job of card holder                          |
+| dob                   | date of birth of card holder                |
+| merch_lat             | Latitude Location of Merchant               |
+| merch_long            | Longitude Location of Merchant              |
+| is_fraud              | Whether Transaction is Fraud (1) or Not (0) |
+
+We also add some of the variables we considered in our EDA for this
+dataset during homework 2.
+
+```{r}
+card_fraud <- card_fraud %>% 
+  mutate( hour = hour(trans_date_trans_time),
+          wday = wday(trans_date_trans_time, label = TRUE),
+          month_name = month(trans_date_trans_time, label = TRUE),
+          age = interval(dob, trans_date_trans_time) / years(1)
+) %>% 
+  rename(year = trans_year) %>% 
+  
+  mutate(
+    
+    # convert latitude/longitude to radians
+    lat1_radians = lat / 57.29577951,
+    lat2_radians = merch_lat / 57.29577951,
+    long1_radians = long / 57.29577951,
+    long2_radians = merch_long / 57.29577951,
+    
+    # calculate distance in miles
+    distance_miles = 3963.0 * acos((sin(lat1_radians) * sin(lat2_radians)) + cos(lat1_radians) * cos(lat2_radians) * cos(long2_radians - long1_radians)),
+
+    # calculate distance in km
+    distance_km = 6377.830272 * acos((sin(lat1_radians) * sin(lat2_radians)) + cos(lat1_radians) * cos(lat2_radians) * cos(long2_radians - long1_radians))
+
+  )
+
+```
+
+## Exploratory Data Analysis (EDA)
+
+First of all, we group all variables by type and examine each variable
+class by class. The dataset has the following types of variables:
+
+**1. Strings:** category city state job
+
+**Factors:** is_fraud
+
+**Ordered:** wday month_name
+
+**2. Geospatial Data:** lat long merch_lat merch_long
+
+lat1_radians lat2_radians long1_radians long2_radians
+
+**3. Dates:** dob
+
+**4. Date/Times:** trans_date_trans_time
+
+**5. Numerical:** year amt city_pop hour age distance_miles distance_km
+
+***Strings to Factors*** Strings are usually not a useful format for
+classification problems. The strings should be converted to factors,
+dropped, or otherwise transformed.
+
+The predictors `category` and `job` are transformed into factors.
+
+```{r}
+#| label: convert-strings-to-factors
+
+
+card_fraud <- card_fraud %>% 
+  mutate(category = factor(category),
+         job = factor(job))
+```
+
+## Exploring factors: how is the compactness of categories?
+
+-   Do we have excessive number of categories? Do we want to combine
+    some?
+
+```{r}
+card_fraud %>% 
+  count(category, sort=TRUE)%>% 
+  mutate(perc = n/sum(n))
+
+card_fraud %>% 
+  count(job, sort=TRUE) %>% 
+  mutate(perc = n/sum(n))
+
+```
+
+`category` has 14 unique values, and `job` has 494 unique values. The
+dataset is quite large, with over 670K records, so these variables don't
+have an excessive number of levels at first glance. However, it is worth
+seeing if we can compact the levels to a smaller number.
+
+## Do all variables have sensible types?
+
+Consider each variable and decide whether to keep, transform, or drop
+it.
+
+## STRINGS
+
+### Exploring category
+
+```{r}
+
+# Count by category
+card_fraud %>%
+  count(category) %>%
+  ggplot(aes(x = reorder(category, n), y = n)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Count by Category", x = "Category", y = "Count") +
+  theme_bw()  +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+# Amount by Category
+ggplot(card_fraud, aes(x = category, y = amt)) +
+  geom_boxplot() +
+  labs(title = "Amount by Category", x = "Category", y = "Amount") +
+  coord_flip() +
+   theme_bw()  +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+# Category by is_fraud
+card_fraud %>%
+  group_by(category, is_fraud) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  mutate(freq = count / sum(count) * 100) %>%
+  filter(is_fraud == 1) %>%
+  arrange(desc(freq)) %>%
+  ggplot(aes(x = reorder(category, freq), y = freq)) +
+  geom_bar(stat = "identity", alpha = 0.8) +
+  geom_text(aes(label = round(freq, 1)), hjust = -0.1, size = 3) +
+  coord_flip() +
+  labs(
+    title = "Fraud Is Concentrated in a Few Spending Categories",
+    subtitle = "Relative share of fraudulent transactions by purchase category (2019-2020)",
+    x = NULL,
+    y = "Percentage (%)"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+
+**CONCLUSION:** The category variable displays a clear imbalance in
+transaction counts and fraudulent cases across merchant types, with some
+categories being much more frequent than others. This suggests that
+merchant category IS a crucial feature, as certain types are more likely
+to be targeted for fraud. **We will keep this variable in the model.**
+
+### Exploring city
+
+```{r}
+#---  Fraudulent transactions rate by city   ---#
+card_fraud %>%
+  group_by(city) %>%
+  summarise(
+    n_fraud = sum(is_fraud == "1"),
+    n_total = n(),
+    fraud_rate = n_fraud / n_total
+  )  %>%
+  arrange(desc(fraud_rate))
+```
+
+**CONCLUSION:** City is a categorical variable with 894 unique values.
+These are too many values for it to be useful, considering that most
+cities have less than 10 fraudulent observations. It is not practical to
+use city as a predictor in a model, so **we will drop it**.
+
+### Exploring state
+
+```{r}
+#---  Fraudulent transactions rate by state   ---#
+card_fraud %>%
+  group_by(state) %>%
+  summarise(
+    n_fraud = sum(is_fraud == "1"),
+    n_total = n(),
+    fraud_rate = n_fraud / n_total
+  )  %>%
+  arrange(desc(fraud_rate))
+```
+
+**CONCLUSION:** Here we have the same logic as with city. State is a
+categorical variable with 51 unique values. It is not practical to use
+state as a predictor in a model, so **we will drop it**.
+
+### Exploring job The job variable has 494 unique values, which is a lot
+for a machine learning model. The most common job appears in only 0.76%
+of the data, and the least common in just 0.0003%.
+
+To simplify, we used ChatGPT to group jobs into 20 broader categories
+like "Professional", "Sales", or "Service".
+
+```{r}
+card_fraud %>% 
+  count(job, sort = TRUE) %>% 
+  mutate(perc = n * 100 / sum(n)) %>% 
+  arrange(desc(perc)) 
+
+card_fraud %>% 
+  count(job, sort = TRUE) %>% 
+  mutate(perc = n * 100 / sum(n)) %>% 
+  summarise(
+    min = min(perc),
+    max = max(perc),
+    mean = mean(perc),
+    median = median(perc),
+    sd = sd(perc),
+    q1 = quantile(perc, 0.25),
+    q3 = quantile(perc, 0.75)
+  )
+
+# Classification done by chat gpt 
+#unique(card_fraud$job)
+
+classified_jobs <- card_fraud %>%
+  mutate(job_category_20 = case_when(
+    str_detect(job, regex("engineer|engineering|architect|surveyor|planner|technologist", TRUE)) ~ "Engineering & Architecture",
+    str_detect(job, regex("doctor|surgeon|oncologist|physician|pathologist", TRUE)) ~ "Medicine",
+    str_detect(job, regex("nurse|midwife|paramedic", TRUE)) ~ "Nursing & Emergency Care",
+    str_detect(job, regex("therapist|psychologist|counsellor|psychiatrist|psychotherapist", TRUE)) ~ "Mental Health",
+    str_detect(job, regex("teacher|lecturer|professor|education|instructor|trainer", TRUE)) ~ "Education",
+    str_detect(job, regex("scientist|researcher|biochemist|chemist|geologist|physicist", TRUE)) ~ "Scientific Research",
+    str_detect(job, regex("it|developer|programmer|software|data scientist|web|cyber|applications", TRUE)) ~ "Technology & Data",
+    str_detect(job, regex("accountant|finance|auditor|bookkeeper", TRUE)) ~ "Accounting & Finance",
+    str_detect(job, regex("banker|investment|trader|analyst", TRUE)) ~ "Banking & Markets",
+    str_detect(job, regex("manager|coordinator|administrator|officer|director", TRUE)) ~ "Management & Administration",
+    str_detect(job, regex("sales|retail|buyer|promotion|merchandiser", TRUE)) ~ "Sales & Retail",
+    str_detect(job, regex("marketing|advertising|public relations|pr", TRUE)) ~ "Marketing & Communication",
+    str_detect(job, regex("artist|designer|illustrator|animator|art", TRUE)) ~ "Art & Design",
+    str_detect(job, regex("media|journalist|broadcast|camera|film|editor", TRUE)) ~ "Media & Journalism",
+    str_detect(job, regex("lawyer|solicitor|legal|barrister|attorney", TRUE)) ~ "Legal",
+    str_detect(job, regex("police|firefighter|armed forces|immigration|customs|military", TRUE)) ~ "Law Enforcement & Defense",
+    str_detect(job, regex("environmental|ecologist|conservation|geochemist", TRUE)) ~ "Environmental & Earth Sciences",
+    str_detect(job, regex("pharmacist|pharmacologist|toxicologist", TRUE)) ~ "Pharmacy & Toxicology",
+    str_detect(job, regex("hospitality|tourism|hotel|restaurant|barista", TRUE)) ~ "Hospitality & Tourism",
+    str_detect(job, regex("charity|social|aid|community|volunteer", TRUE)) ~ "Social & Community Work",
+    TRUE ~ "Other"
+  ))
+
+classified_jobs %>%
+  count(job_category_20, sort = TRUE) %>%
+  ggplot(aes(x = reorder(job_category_20, n), y = n)) +
+  geom_col() +
+  geom_text(aes(label = n), hjust = -0.1, size = 2.5) +  # Reduce size
+  coord_flip() +
+  labs(
+    title = "Job Distribution by Category",
+    x = "Job Category",
+    y = "Count"
+  ) +
+  theme_bw()  +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  ) +
+  expand_limits(y = max(classified_jobs %>% count(job_category_20) %>% pull(n)) * 1.1)
+```
+
+**Conclusion:** The histogram shows that, even after asking Chat GPT to
+help us group jobs in only 20 categories, most jobs end up in the
+"Other" category. Since our goal is to predict fraud transactions, this
+variable would offer little interpretability if "Other" dominates.
+Therefore, it’s better to **drop it from the model.**
+
+### Exploring wday
+
+```{r}
+card_fraud %>% 
+  group_by(wday) %>%
+  summarise(
+    n_fraud = sum(is_fraud == "1"), # The total # of fraudulent transactions
+    total_n = n(), # The total # of f transactions
+    percent_fraud = (n_fraud / total_n) * 100 # The percentage of fraudulent transactions
+  ) %>% 
+  
+  # Plotting our bar graph
+  ggplot(aes(x =  wday, y = percent_fraud)) + # The days are already in order
+    geom_bar(stat = "identity") +
+    labs(
+      title = "Sunday and Monday are the days with least credit card frauds",
+      x = NULL,
+      y = "Fraudulent transactions as percentage of total (%)"
+    ) +
+  theme(plot.title.position = "plot",
+        plot.title = element_text(hjust = 0)) + # To move the title to the left
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+# Convert to factor only (without order because step_dummy does not work well with ordered factors)
+card_fraud$wday <- factor(card_fraud$wday, ordered = FALSE)
+  
+```
+
+Just by LOOKING at the graph, we do see a difference in weekdays,
+specially if the transaction was made in Sunday and Monday. To test this
+assumption, we use a Chi-squared test. Our null hypotesis is that fraud
+is independent to weekday.
+
+```{r}
+# Chi-squared test for independence
+chisq.test(table(card_fraud$wday, card_fraud$is_fraud))
+```
+
+The evidence supporting the null variable (that is, the p-value) is way
+to small. So we REJECT the null hypotesis (meaning, fraud DOES depend on
+weekday).
+
+**CONCLUSION:** Weekday IS an useful variable to predict fraud, **we
+will keep it in the model.**
+
+### Exploring month_name
+
+```{r}
+card_fraud %>% 
+  group_by(month_name) %>%
+  summarise(
+    n_fraud = sum(is_fraud == "1"), # The total # of fraudulent transactions
+    total_n = n(), # The total # of f transactions
+    percent_fraud = (n_fraud / total_n) * 100 # The percentage of fraudulent transactions
+  ) %>% 
+  
+  # Plotting our bar graph
+  ggplot(aes(x =  month_name, y = percent_fraud)) + # The days are already in order
+    geom_bar(stat = "identity") +
+    labs(
+      title = "January and February are the months with more credit card frauds",
+      x = NULL,
+      y = "Fraudulent transactions as percentage of total (%)"
+    ) +
+  theme(plot.title.position = "plot",
+        plot.title = element_text(hjust = 0)) + # To move the title to the left
+  theme_bw() + 
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+```
+
+Just by LOOKING at the graph, we do see a difference in months,
+specially if the transaction was made in January and February. To test
+this assumption, we use a Chi-squared test. Our null hypotesis is that
+fraud is independent to month.
+
+```{r}
+# Chi-squared test for independence
+chisq.test(table(card_fraud$month_name, card_fraud$is_fraud))
+```
+
+The evidence supporting the null variable (that is, the p-value) is way
+to small. So we REJECT the null hypotesis (meaning, fraud DOES depend on
+month).
+
+Finally, for it not to be necessary to create 11 dummy variables in the
+model (one for each month and excluding the base one), we will create a
+new variable called quarter and we will use this one as a variable in
+the model.
+
+```{r}
+card_fraud <- card_fraud %>%
+  mutate(quarter = quarter(trans_date_trans_time, with_year = FALSE)) %>% 
+  mutate(quarter = factor(quarter))
+```
+
+**CONCLUSION:** Month name is an useful variable to predict fraud, so
+**we will keep it in our model** . However, instead of this one **we
+create a new variable (quarter) in order to have less categories**.
+
+## GEOSPACIAL
+
+Geospacial variables are redundant to our analysis since we are already
+creating two new variables for distance, which are both computed based
+on our geospacial variables.
+
+**CONCLUSION:** We **won't include** ANY geospacial variables in the
+model.
+
+## DATES
+
+### Exploring dob 
+
+Makes no sense to explore this variable as we are already
+creating a new variable called age, which is the age of the card holder
+at the time of the transaction (computed as the difference between both
+dates - transaction date and dob).
+
+**CONCLUSION:** Date of birth (dob) is **NOT an useful variable** to
+predict fraud.
+
+# DATE/TIMES:
+
+### Exploring trans_date_trans_time
+It makes no sense to explore this variable as we already created new variables (hour, wday, month_name,
+age) based on this.
+
+**CONCLUSION:** We **won't include** this variable in the model.
+
+# NUMERICAL
+
+### Exploring year
+Since we only have two years of data (2019 and 2020), there's no need to create a graph for this one, by simply looking at the two fraud percentages we can conclude if the variable is useful or not.
+
+```{r}
+card_fraud %>% 
+  group_by(year) %>%
+  summarise(
+    n_fraud = sum(is_fraud == "1"), # The total # of fraudulent transactions
+    total_n = n(), # The total # of f transactions
+    percent_fraud = (n_fraud / total_n) * 100 # The percentage of fraudulent transactions
+  ) 
+```
+
+As we can observe, the fraud percentage is very similar in both years,
+so we can conclude that year is not a useful variable to predict fraud.
+
+**CONCLUSION:** Year is **NOT an useful variable** to predict fraud.
+
+### Exploring amt
+
+```{r}
+# Plot amount as histogram
+ggplot(card_fraud, aes(x = amt)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Distribution of Amount", x = "Amount", y = "Frequency") +
+  facet_wrap(~is_fraud, scales = "free") +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+  
+card_fraud %>% 
+  group_by(is_fraud) %>% 
+  summarise(
+    mean_amt = mean(amt, na.rm = TRUE),
+    median_amt = median(amt, na.rm = TRUE),
+    sd_amt = sd(amt, na.rm = TRUE),
+    min_amt = min(amt, na.rm = TRUE),
+    max_amt = max(amt, na.rm = TRUE)
+  )
+
+# Convert amt to log scale for better visualization
+card_fraud <- card_fraud %>%
+  mutate(log_amt = log(amt))
+
+ggplot(card_fraud, aes(x = log_amt)) +
+  geom_histogram(bins = 30) +
+  labs(title = "Distribution of Amount in Logs", x = "Amount (log)", y = "Frequency") + 
+  facet_wrap(~is_fraud, scales = "free") +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+```
+
+**CONCLUSION:** The amount variable is highly right-skewed, with most
+transactions being made at lower amounts and a few extreme outliers at
+high values. As it can be observed both in the histograms and in the
+summary table, fraudulent transactions have a much higher mean (\$527 vs
+\$67 in non-fraudulent ones), higher median (\$369 vs \$47) and higher
+standard deviation (\$391 vs \$155). However, non fraudulent
+transactions can achieve **much greater** values than fraudulent ones,
+as it can be observed in the histogram. The maximum amount registered
+for a fraudulent transaction is of \$1,334; while for legitimate
+transaction this number rises up to \$27,120.
+
+This indicates that there IS a difference in transaction amounts
+depending on whether the transaction is fraudulent or not, making this
+variable important for fraud detection. Therefore, we decide to
+**include this variable in our model**.
+
+### Exploring city population
+
+```{r}
+# Initial histogram: There is a high dispersion
+ggplot(card_fraud, aes(x = city_pop)) +
+  geom_histogram(bins = 30) +
+  labs(
+    title = "Histogram of City Population",
+    x = "City Population",
+    y = "Count"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+# Transform the variable into categories
+card_fraud = card_fraud %>%
+  mutate(city_pop_cat = case_when(
+    city_pop <= 1000 ~ "Very Small",
+    city_pop <= 5000 ~ "Small",
+    city_pop <= 50000 ~ "Medium",
+    city_pop <= 500000 ~ "Large",
+    TRUE ~ "Very Large"
+  )) 
+
+# Count and percentage by category
+card_fraud %>% 
+  count(city_pop_cat, sort = TRUE) %>%
+  mutate(perc = round(n * 100 / sum(n), 2)) %>% 
+  ggplot(aes(x = reorder(city_pop_cat, -perc), y = perc)) +
+  geom_col() +
+  geom_text(aes(label = paste0(perc, "%")), vjust = -0.5, size = 3) +
+  labs(
+    title = "City Population Categories",
+    x = "City Population Category",
+    y = "Percentage (%)"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+# Barplot of is_fraud and city_pop_cat
+card_fraud %>% 
+  group_by(city_pop_cat, is_fraud) %>%
+  summarise(n = n(), .groups = "drop") %>% # To get rid of warnings
+  mutate(perc = round(n * 100 / sum(n), 2)) %>% 
+  ggplot(aes(x = city_pop_cat, y = perc, fill = is_fraud)) +
+  geom_col(position = "dodge") +
+  geom_text(aes(label = paste0(perc, "%")), position = position_dodge(width = 0.9), vjust = -0.5, size = 3) +
+  scale_fill_manual(values = c("0" = "steelblue", "1" = "tomato")) +  # Set colors here
+  labs(
+    title = "Fraud Distribution by City Population Category",
+    x = "City Population Category",
+    y = "Percentage (%)",
+    fill = "Is Fraud"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+  
+```
+
+
+The city_pop variable was originally numeric, but its histogram showed a
+wide distribution with extreme outliers. To address this, we grouped it
+into five categories:
+
+Very Small: 0–1,000 Small: 1,001–5,000 Medium: 5,001–50,000 Large:
+50,001–500,000 Very Large: 500,001 and above
+
+**Conclusion:** When comparing these categories with the is_fraud
+variable (last), we don't observe any clear or significant differences
+in fraud occurrence across groups. Therefore, we decide to **drop this
+variable from the model**.
+
+### Exploring Hour
+
+```{r}
+card_fraud %>%
+  group_by(hour, is_fraud) %>%
+  count() %>%
+  group_by(hour) %>%
+  mutate(perc = round(n * 100 / sum(n), 2)) %>%
+  filter(is_fraud == 1) %>%
+  ggplot(aes(x = hour, y = perc)) +
+  geom_col() +
+  labs(
+    title = "Fraud is commited while you're sleeping",
+    x = "Hour of Day",
+    y = "Fraud Percentage (%)"
+  ) +
+  theme_bw() +
+  theme(
+    plot.title     = element_text(size = 14, face = "bold"),
+    axis.title.x   = element_text(size = 10),
+    axis.title.y   = element_text(size = 10),
+    axis.text      = element_text(size = 8),
+    panel.grid.minor = element_blank()
+  )
+
+```
+
+The percentage of fraudulent transactions varies significantly by hour.
+Fraud is most likely to occur during the early hours of the day
+(midnight to 3 a.m.) and again late at night (10 p.m. to midnight),
+where fraud rates exceed 2.5%. In contrast, fraud is least common during
+regular business hours, with percentages remaining well below 1%. These
+patterns suggest that fraudulent activity tends to occur outside of
+typical working hours, possibly when detection is less likely.
+
+**CONCLUSION** We will **keep the variable** because it seems visually
+important for the classification. We will test it with the model.
+
+### Exploring age
+
+```{r}
+# Create age group to simplify the analysis
+card_fraud = card_fraud %>%
+  mutate(age_group = case_when(
+    age <= 18 ~ "0-18",
+    age <= 25 ~ "19-25",
+    age <= 35 ~ "26-35",
+    age <= 45 ~ "36-45",
+    age <= 55 ~ "46-55",
+    age <= 65 ~ "56-65",
+    age <= 75 ~ "66-75",
+    age <= 85 ~ "76-85",
+    TRUE ~ "85+"
+  )) 
+
+card_fraud %>% 
+  group_by(age_group) %>%
+  summarise(n_fraud = sum(is_fraud == 1), # The total # of fraudulent transactions
+              total_n = n(), # The total # of f transactions
+              percent_fraud = (n_fraud / total_n) * 100 # The percentage of fraudulent transactions
+  ) %>%
+  
+  # Now we create a bar plot by age group...
+  ggplot(aes(x = age_group, y = percent_fraud)) +
+    geom_bar(stat = "identity") +
+    geom_text(aes(label = sprintf("%.1f%%", percent_fraud)), 
+              vjust = -0.03, # To add the percentage as a label near the bar
+              size = 3.5) +
+    labs(
+      title = "Older customers are more prone to fraud",
+      x = "Customer's age",
+     y = "Fraudulent transactions / total transactions (%)") +
+    theme_bw() +
+    theme(plot.title.position = "plot",
+              axis.text.y = element_blank(), # I want to erase the y-axis as I already added labels
+              axis.ticks.y = element_blank(),
+              panel.grid.major.y = element_blank())
+```
+
+
+By grouping all ages in groups, we can definitely see that customers
+between ages 76 and 85 are the most exposed to fraud, with a ratio of
+fraudulent transactions of 1.0%. The second, most exposed group is that
+of ages higher than 85, where the percentage of fraud is 0.9%. The rest
+of the age groups have a percentage of fraudulent transactions below
+0.8%.
+
+To test this, we use a Chi-squared test. Our null hypotesis is that
+fraud is independent to age.
+
+```{r}
+# Chi-squared test for independence
+chisq.test(table(card_fraud$age_group, card_fraud$is_fraud))
+```
+
+The evidence supporting the null variable (that is, the p-value) is way
+to small. So we REJECT the null hypotesis (meaning, fraud DOES depend on
+age).
+
+**CONCLUSION:** Age is an useful variable to predict fraud, so **we will
+keep it in our model** . However, instead of using age **we create a new
+variable (age_group) in order to have less categories**.
+
+### Exploring distance_miles and distance_km
+The distance_miles and
+distance_km variables are numerical variables that represent the
+distance between the card holder's location and the merchant's location.
+We will keep only one of these variables, as they represent the same
+information in different units. We will keep distance_km.
+
+```{r}
+#---  Fraudulent transactions rate by distance_miles   ---#
+
+# Percentile 99.5
+quantile(card_fraud$distance_km, 0.995, na.rm = TRUE)
+
+
+# Plot distance by is_fraud
+card_fraud %>% 
+  ggplot(aes(x = is_fraud, y = distance_km, fill = is_fraud)) +
+  
+  # Plot type
+  geom_violin(trim = FALSE, alpha = 0.5, color = NA) +
+  
+  # Add boxplot in the center
+  geom_boxplot(width = 0.1, outlier.size = 0.8, alpha = 0.7) +
+  scale_fill_manual(values = c("steelblue", "tomato")) +
+  labs(
+    x = "Fraud (0 = No, 1 = Yes)",
+    y = "Distance (km)",
+    title = "Distribution of distance by fraud"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 13, face = "bold")
+  ) +
+  NULL
+
+
+card_fraud <- card_fraud %>%
+  mutate(
+    distance_bin = cut(
+      distance_km,
+      breaks = seq(0, max(distance_km, na.rm=TRUE) + 15, by = 15),
+      right = FALSE,
+      include.lowest = TRUE)
+  )
+
+# Fraudulent transaction by distance and state
+card_fraud %>%
+  group_by(distance_bin) %>%
+  summarise(
+    total = n(),
+    frauds = sum(is_fraud == "1"),
+    fraud_rate = frauds / total,
+    .groups = "drop"
+  ) %>% 
+
+  # Plot
+  ggplot(aes(x = distance_bin, y = fraud_rate)) +
+  
+  # Plot type
+  geom_col() +
+  
+  # Flip x and y axes
+  coord_flip() +
+  
+  # Add facet wrap
+  #facet_wrap(~state, ncol = 5) + 
+  
+  # Add labels
+  labs(
+    x = "Distance",
+    y = "Fraud percentage",
+    title = "Fraudulent transactions rate by distance"
+  ) +
+  
+  # Add theme
+  theme_bw() + 
+  
+  # Adjust y label to percentage
+  scale_y_continuous(labels = scales::percent) +
+  # Adjust x label size
+  theme(axis.text.x = element_text(size = 5)) +
+  theme(axis.text.y = element_text(size = 5)) +
+  NULL
+
+# Chi-squared test for independence
+chisq.test(table(card_fraud$distance_bin, card_fraud$is_fraud))
+
+# Convert distance_bin to a boolean factor variable
+card_fraud <- card_fraud %>%
+  mutate(
+    is_distance_135_km = as.factor(ifelse(distance_km > 135, "1", "0"))
+  )
+
+# Chi-squared test for independence
+chisq.test(table(card_fraud$is_distance_135_km, card_fraud$is_fraud))
+
+```
+
+Distance_km is NOT an useful variable to predict fraud, the distribution
+of distance_km appears similar for both fraudulent and non-fraudulent
+transactions, suggesting that distance alone may not be a strong
+predictor of fraud. However, we observe that transactions involving
+distances greater than 135 km —corresponding to the 99.5th percentile—
+can be flagged with a new binary variable. Notably, the fraud rate
+increases for these long-distance transactions; for instance, nearly 1%
+of transactions over 135 km are fraudulent. This pattern could indicate
+that such transactions carry a higher risk and may be useful for model
+features or rule-based alerts. Besides, the p-value of the chi-squared
+test for independence between is_distance_135_km and is_fraud is less
+than 0.05, indicating that there is a significant association between
+these two variables.
+
+**CONCLUSION:** distance_miles is NOT an useful variable to predict
+fraud, however, **is_distance_135_km IS an useful variable to predict
+fraud**, therefore, we will keep that one in our model.
+
+## Which variables to keep in your model?
+
+After doing our EDA, we will keep the following variables in our model:
+
+### STRING:
+
+-   category
+-   wday
+-   quarter
+-   age_group
+-   is_distance_135_km (derives from a numerical variable)
+
+### NUMERICAL:
+
+-   amt
+-   hour
+
+```{r}
+# Select the variables to keep in the model
+card_fraud <- card_fraud %>% 
+  select(is_fraud, category, wday, quarter, age_group, is_distance_135_km,
+         amt, hour)
+```
+
+## Fit your workflows in smaller sample
+
+We will work with a smaller sample of 10% of the values the original
+dataset to identify the best model, and once we have the best model we
+can use the full dataset to train- test our best model.
+
+```{r}
+# select a smaller subset
+my_card_fraud <- card_fraud %>% 
+  # select a smaller subset, 10% of the entire dataframe 
+  slice_sample(prop = 0.10) 
+```
+
+## Split the data in training - testing
+
+```{r}
+# **Split the data**
+
+set.seed(123)
+
+data_split <- initial_split(my_card_fraud, # updated data
+                           prop = 0.8, 
+                           strata = is_fraud)
+
+card_fraud_train <- training(data_split) 
+card_fraud_test <- testing(data_split)
+```
+
+## Cross Validation
+
+We will work with 3 CV folds to quickly get an estimate for the best model.
+
+```{r}
+set.seed(123)
+cv_folds <- vfold_cv(data = card_fraud_train, 
+                          v = 3, 
+                          strata = is_fraud)
+cv_folds 
+```
+
+## Define a tidymodels `recipe`
+
+```{r, define_recipe}
+
+glimpse(card_fraud_train)
+
+fraud_rec <- recipe(is_fraud ~ ., data = card_fraud_train) %>%
+  step_log(amt) %>% # Log transform amount
+  step_novel(all_nominal(), -all_outcomes()) %>% # Use *before* `step_dummy()` so new level is dummified
+  step_dummy(all_nominal(), -all_outcomes()) %>% 
+  step_zv(all_numeric(), -all_outcomes())  %>% 
+  step_normalize(amt,hour) %>% 
+  step_corr(all_predictors(), threshold = 0.75, method = "spearman") 
+
+
+```
+
+Check the pre-processed dataframe
+
+```{r}
+prepped_data <- 
+  fraud_rec %>% # use the recipe object
+  prep() %>% # perform the recipe on training data
+  juice() # extract only the preprocessed dataframe 
+
+glimpse(prepped_data)
+
+```
+
+## Define various models
+
+You should define the following classification models:
+
+1.  Logistic regression, using the `glm` engine
+2.  Decision tree, using the `C5.0` engine
+3.  Random Forest, using the `ranger` engine and setting
+    `importance = "impurity"`)\
+4.  A boosted tree using Extreme Gradient Boosting, and the `xgboost`
+    engine
+5.  A k-nearest neighbours, using 4 nearest_neighbors and the `kknn`
+    engine
+
+```{r, define_models}
+## Model Building
+
+# 1. Pick a `model type`
+# 2. set the `engine`
+# 3. Set the `mode`: regression or classification
+
+# Logistic regression
+log_spec <-  logistic_reg() %>%  # model type
+  set_engine(engine = "glm") %>%  # model engine
+  set_mode("classification") # model mode
+
+# Show your model specification
+log_spec
+
+# Decision Tree
+tree_spec <- decision_tree() %>%
+  set_engine(engine = "C5.0") %>%
+  set_mode("classification")
+
+tree_spec
+
+# Random Forest
+rf_spec <- 
+  rand_forest() %>% 
+  set_engine("ranger", importance = "impurity") %>% 
+  set_mode("classification")
+
+
+# Boosted tree (XGBoost)
+xgb_spec <- 
+  boost_tree() %>% 
+  set_engine("xgboost") %>% 
+  set_mode("classification") 
+
+# K-nearest neighbour (k-NN)
+knn_spec <- 
+  nearest_neighbor(neighbors = 4) %>% # we can adjust the number of neighbors 
+  set_engine("kknn") %>% 
+  set_mode("classification")
+
+```
+
+## Bundle recipe and model with `workflows`
+
+```{r, define_workflows}
+
+
+## Bundle recipe and model with `workflows`
+
+# Create a workflow object to bundle the recipe and model specification
+log_wflow <- # new workflow object
+ workflow() %>% # use workflow function
+ add_recipe(fraud_rec) %>%   # use the new recipe
+ add_model(log_spec)   # add your model spec
+
+# show object
+log_wflow
+
+
+## A few more workflows
+
+tree_wflow <-
+ workflow() %>%
+ add_recipe(fraud_rec) %>% 
+ add_model(tree_spec) 
+
+rf_wflow <-
+ workflow() %>%
+ add_recipe(fraud_rec) %>% 
+ add_model(rf_spec) 
+
+xgb_wflow <-
+ workflow() %>%
+ add_recipe(fraud_rec) %>% 
+ add_model(xgb_spec)
+
+knn_wflow <-
+ workflow() %>%
+ add_recipe(fraud_rec) %>% 
+ add_model(knn_spec)
+
+
+
+```
+
+## Fit models
+
+```{r, fit_models}
+tic()
+log_res <- log_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, accuracy,
+      kap, roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)) 
+time <- toc()
+
+#Save the time of execution of each model
+log_time <- list()
+log_time$res <- time[[4]]
+
+
+# Show average performance over all folds (note that we use log_res):
+log_res %>%  collect_metrics(summarize = TRUE)
+
+# Show performance for every single fold:
+log_res %>%  collect_metrics(summarize = FALSE)
+
+
+## `collect_predictions()` and get confusion matrix{.smaller}
+
+log_pred <- log_res %>% collect_predictions()
+
+log_pred %>%  conf_mat(is_fraud, .pred_class) 
+
+log_pred %>% 
+  conf_mat(is_fraud, .pred_class) %>% 
+  autoplot(type = "mosaic") +
+  geom_label(aes(
+      x = (xmax + xmin) / 2, 
+      y = (ymax + ymin) / 2, 
+      label = c("TP", "FN", "FP", "TN")))
+
+
+log_pred %>% 
+  conf_mat(is_fraud, .pred_class) %>% 
+  autoplot(type = "heatmap")
+
+
+## ROC Curve
+
+log_pred %>% 
+  group_by(id) %>% # id contains our folds
+  roc_curve(is_fraud, .pred_1) %>% 
+  autoplot()
+
+
+## Decision Tree results
+tic()
+tree_res <-
+  tree_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+    ) 
+time <- toc()
+#Save the time of execution of each model
+log_time$tree <- time[[4]]
+
+tree_res %>%  collect_metrics(summarize = TRUE)
+
+
+## Random Forest
+tic()
+rf_res <-
+  rf_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+    ) 
+time <- toc()
+#Save the time of execution of each model
+log_time$rf <- time[[4]]
+
+rf_res %>%  collect_metrics(summarize = TRUE)
+
+## Boosted tree - XGBoost
+tic()
+xgb_res <- 
+  xgb_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+    ) 
+time <- toc()
+#Save the time of execution of each model
+log_time$xgb <- time[[4]]
+
+xgb_res %>% collect_metrics(summarize = TRUE)
+
+## K-nearest neighbour
+tic()
+knn_res <- 
+  knn_wflow %>% 
+  fit_resamples(
+    resamples = cv_folds, 
+    metrics = metric_set(
+      recall, precision, f_meas, 
+      accuracy, kap,
+      roc_auc, sens, spec),
+    control = control_resamples(save_pred = TRUE)
+    ) 
+time <- toc()
+#Save the time of execution of each model
+log_time$knn <- time[[4]]
+
+knn_res %>% collect_metrics(summarize = TRUE)
+
+
+```
+
+## Compare models
+
+```{r, compare_models}
+## Model Comparison
+
+log_metrics <- 
+  log_res %>% 
+  collect_metrics() %>% #summarize true
+  # add the name of the model to every row
+  mutate(model = "Logistic Regression",
+         time = log_time$res)
+
+# add more models here
+tree_metrics <- 
+  tree_res %>% 
+  collect_metrics() %>%
+  mutate(model = "Decision Tree")
+
+rf_metrics <- 
+  rf_res %>% 
+  collect_metrics() %>%
+  mutate(model = "Random Forest")
+
+xgb_metrics <- 
+  xgb_res %>% 
+  collect_metrics() %>%
+  mutate(model = "XGBoost")
+
+knn_metrics <- 
+  knn_res %>% 
+  collect_metrics() %>%
+  mutate(model = "Knn")
+
+# create dataframe with all models
+model_compare <- bind_rows(log_metrics,
+                            tree_metrics,
+                            rf_metrics,
+                           xgb_metrics,
+                           knn_metrics
+                      ) %>% 
+  # get rid of 'sec elapsed' and turn it into a number
+  mutate(time = str_sub(time, end = -13) %>% 
+           as.double()
+         )
+
+
+#Pivot wider to create barplot
+  model_comp <- model_compare %>% 
+  select(model, .metric, mean, std_err) %>% 
+  pivot_wider(names_from = .metric, values_from = c(mean, std_err)) 
+
+# show mean are under the curve (ROC-AUC) for every model
+model_comp %>% 
+  arrange(mean_roc_auc) %>% 
+  mutate(model = fct_reorder(model, mean_roc_auc)) %>% # order results
+  ggplot(aes(model, mean_roc_auc, fill=model)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_brewer(palette = "Blues") +
+   geom_text(
+     size = 3,
+     aes(label = round(mean_roc_auc, 2), 
+         y = mean_roc_auc + 0.08),
+     vjust = 1
+  )+
+  theme_light()+
+  theme(legend.position = "none")+
+  labs(y = NULL)
+
+
+```
+
+
+As it can be seen in the barplot, the best model is the XGBoost model,
+with a ROC-AUC of 0.99, followed by the Random Forest model with a
+ROC-AUC of 0.98. The Logistic Regression model has a ROC-AUC of 0.96,
+while the Decision Tree and KNN models have a ROC-AUC of 0.95 and 0.94
+respectively.
+
+Moreover, in terms of time, XGBoost is the fastest model to fit, taking
+12.5 seconds, while the Random Forest takes 31.7 seconds. Therefore,
+given that they both have a very similar ROC-AUC, we chose to go with
+XGBoost as it is the fastest model.
+
+## Which metric to use
+
+Since this is a classification problem, accuracy is not a good metric to
+use, as it can be misleading when the classes are imbalanced (like in
+this case, where more than 99% of the data is NOT fraudulent). This
+means, a model that predicts everything as non-fraud would still have a
+high accuracy. Therefore we chose to use roc_auc as our main metric. AUC
+(Area Under Curve) measures the overall ability of the model to rank a
+random positive higher than a random negative.
+
+## `last_fit()`
+
+```{r}
+
+## `last_fit()` on test set
+
+# - `last_fit()`  fits a model to the whole training data and evaluates it on the test set. 
+# - provide the workflow object of the best model as well as the data split object (not the training data). 
+
+# Training data
+xgb_res %>% collect_metrics(summarize = TRUE)
+
+# Fitting data
+ 
+last_fit_xgb <- last_fit(xgb_wflow, 
+                        split = data_split,
+                        metrics = metric_set(
+                          accuracy, f_meas, kap, precision,
+                          recall, roc_auc, sens, spec))
+
+last_fit_xgb %>% collect_metrics(summarize = TRUE)
+
+
+
+```
+
+## Get variable importance using `vip` package
+
+```{r}
+
+## Variable importance using `{vip}` package
+last_fit_xgb %>% 
+  pluck(".workflow", 1) %>%   
+  pull_workflow_fit() %>% 
+  vip(num_features = 10) +
+  theme_light()
+
+```
+
+We can observe that the most influential predictor is the transaction amount (amt), followed by wheter the transaction was in a grocery shop or not, and the transaction hour. These features help the model differentiate between normal and potentially fraudulent behavior. In contrast, demographic features like age group contribute very little.
+
+## Plot Final Confusion matrix and ROC curve
+
+```{r}
+## Final Confusion Matrix
+
+last_fit_xgb %>%
+  collect_predictions() %>% 
+  conf_mat(is_fraud, .pred_class) %>% 
+  autoplot(type = "heatmap")
+
+```
+
+The confusion matrix provides a summary of the model's classification results on the test set. It shows that the model correctly identified 50 fraudulent transactions (true positives) and 13,343 non-fraudulent transactions (true negatives), while misclassifying 27 frauds as non-fraud (false negatives) and just 1 non-fraud as fraud (false positive). This performance results in a very high accuracy and precision, though the recall (sensitivity) is lower, indicating that some fraud cases are still being missed. Given the strong class imbalance, this trade-off between catching fraud and minimizing false alarms is typical, but further tuning could improve sensitivity.
+
+```{r}
+## Final ROC curve
+last_fit_xgb %>% 
+  collect_predictions() %>% 
+  roc_curve(is_fraud, .pred_1) %>% 
+  autoplot()
+
+```
+
+The ROC (Receiver Operating Characteristic) curve illustrates the trade-off between sensitivity and specificity across different threshold values. The curve rises sharply towards the top-left corner, indicating that the model is highly effective at distinguishing between fraudulent and non-fraudulent transactions. This is supported by a visually high AUC (Area Under the Curve), suggesting excellent overall discriminative ability. The ROC curve reinforces the model’s strong performance, especially in scenarios where ranking cases by risk is more important than the specific classification threshold.
+
+## Calculating the cost of fraud to the company
+
+-   How much money (in US\$ terms) are fraudulent transactions costing
+    the company? Generate a table that summarizes the total amount of
+    legitimate and fraudulent transactions per year and calculate the %
+    of fraudulent transactions, in US\$ terms. Compare your model vs the
+    naive classification that we do not have any fraudulent
+    transactions.
+
+```{r}
+#| label: savings-for-cc-company
+
+# 1. Fit the model and generate predictions for the entire data set
+xgb_preds <- 
+  xgb_wflow %>% 
+  fit(data = card_fraud_train) %>%
+  augment(new_data = card_fraud)
+
+# 2. Display confusion matrix for reference
+xgb_preds %>%
+  conf_mat(truth = is_fraud, estimate = .pred_class)
+
+# 3. Add actual transaction amounts and predicted classes to the dataset
+cost <- xgb_preds %>%
+  select(is_fraud, amt, pred = .pred_class)
+
+# 4. Calculate cost outcomes for each transaction
+cost <- cost %>%
+  mutate(
+    # False negatives: we thought they were not fraud, but they were
+    false_negatives = ifelse(is_fraud == "1" & pred == "0", amt, 0),
+    # False positives: we thought they were fraud, but they were not
+    false_positives = ifelse(is_fraud == "0" & pred == "1", amt, 0),
+    # True positives: we thought they were fraud, and they were
+    true_positives  = ifelse(is_fraud == "1" & pred == "1", amt, 0),
+    # True negatives: we thought they were ok, and they were
+    true_negatives  = ifelse(is_fraud == "0" & pred == "0", amt, 0),
+    # Naive case: if we classify everything as not fraud, we miss all fraud
+    false_naives = ifelse(is_fraud == "1", amt, 0) 
+  )
+
+# 5. Summarize total costs for the model vs naive baseline
+cost_summary <- cost %>% 
+  summarise(across(starts_with(c("false","true", "amt")), 
+            ~ sum(.x, na.rm = TRUE)))
+
+cost_summary
+
+# 6. (Optional) Summarize overall fraud statistics
+fraud_summary <- cost %>%
+  summarise(
+    Total_Transactions = sum(amt),
+    Total_Fraud = sum(amt[is_fraud == "1"]),
+    Percent_Fraud = 100 * sum(amt[is_fraud == "1"]) / sum(amt)
+  )
+
+print(fraud_summary)
+
+```
+
+-   If we use a naive classifier thinking that all transactions are
+    legitimate and not fraudulent, the cost to the company is
+    `r scales::dollar(cost_summary$false_naives)`.
+
+-   With our best model, the total cost of false negatives, namely
+    transactions our classifier thinks are legitimate but which turned
+    out to be fraud, is
+    `r scales::dollar(cost_summary$false_negatives)`.
+
+-   Our classifier also has some false positives,
+    `r scales::dollar(cost_summary$false_positives)`, namely flagging
+    transactions as fraudulent, but which were legitimate. Assuming the
+    card company makes around 2% for each transaction (source:
+    <https://startups.co.uk/payment-processing/credit-card-processing-fees/>),
+    the amount of money lost due to these false positives is
+    `r scales::dollar(cost_summary$false_positives * 0.02)`
+
+-   The \$ improvement over the naive policy is
+    `r scales::dollar(cost_summary$false_naives - cost_summary$false_negatives - cost_summary$false_positives * 0.02)`.
