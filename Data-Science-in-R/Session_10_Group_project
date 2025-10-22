@@ -1295,10 +1295,10 @@ model_comp %>%
 ```
 
 
-As it can be seen in the barplot, the best model is the Random Forest model,
-with a ROC-AUC of 0.99, followed by the XGBoost model with a
-ROC-AUC of 0.98. The Logistic Regression model has a ROC-AUC of 0.84,
-while the Decision Tree and KNN models have a ROC-AUC of 0.88 and 0.6
+As it can be seen in the barplot, the best model is the XGBoost model,
+with a ROC-AUC of 0.98, followed by the Random Forest model with the same
+ROC-AUC. The Logistic Regression model has a ROC-AUC of 0.85,
+while the Decision Tree and KNN models have a ROC-AUC of 0.91 and 0.61
 respectively.
 
 Moreover, in terms of time, XGBoost is the fastest model to fit, taking
@@ -1369,7 +1369,7 @@ last_fit_xgb %>%
 
 ```
 
-The confusion matrix provides a summary of the model's classification results on the test set. It shows that the model correctly identified 50 fraudulent transactions (true positives) and 13,343 non-fraudulent transactions (true negatives), while misclassifying 27 frauds as non-fraud (false negatives) and just 1 non-fraud as fraud (false positive). This performance results in a very high accuracy and precision, though the recall (sensitivity) is lower, indicating that some fraud cases are still being missed. Given the strong class imbalance, this trade-off between catching fraud and minimizing false alarms is typical, but further tuning could improve sensitivity.
+The confusion matrix provides a summary of the model's classification results on the test set. It shows that the model correctly identified around 50 fraudulent transactions (true positives) and about 13,500 non-fraudulent transactions (true negatives), while misclassifying ~30 frauds as non-fraud (false negatives) and ~10 non-fraud as fraud (false positive). This performance results in a very high accuracy and precision, though the recall (sensitivity) is lower, indicating that some fraud cases are still being missed. Given the strong class imbalance, this trade-off between catching fraud and minimizing false alarms is typical, but further tuning could improve sensitivity.
 
 ```{r}
 ## Final ROC curve
