@@ -1,0 +1,145 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Author   : Dr Ekaterina Abramova
+Document : Graded Homework 1 Tempalte
+"""
+
+# simply run these lines to obtain the data (ensure stocks.csv is in the same folder as this template)
+import pandas as pd
+df = pd.read_csv("../Data/stocks.csv")
+date = list(df['Date'])
+fb = list(df['fb'])
+amzn = list(df['amzn'])
+brk = list(df['brk'])
+
+
+#%% Key Financial Statistics 
+"""
+R       : (list) simple returns (not in %)
+rf      : (float) risk free rate (annualised - e.g. 1% should be used as 0.01)
+busDays : (int) number of business days when trading happens in a single year
+
+R       : (float) sum total of simple daily returns over time series
+muR     : (float) mean of simple daily returns
+sigmaR  : (float) std dev of simple daily returns
+
+highPt  : (float) highest time series point of prices
+lowPt   : (float) lowest time series point of prices
+
+muR_annual    : (float) mean of simple daily returns (annualised)
+sigmaR_annual : (float) volatility of simple daily returns (annualised)
+SR_annual     : (float) Sharpe Ratio calculated using annualised statistics
+"""
+
+import matplotlib.pyplot as plt
+from datetime import datetime
+
+prices = brk # SET THE ASSET YOU WISH TO EXAMINE HERE!!!
+
+# Lets format the dates to enable easier plotting 
+datesNew = [datetime.strptime(x, '%d/%m/%Y').date() for x in date] 
+'''
+This is called list comprehension. It creates a list (hence square brackets) 
+and is actually a quick way of performing for loops on a single line. It takes 
+each element of variable date and converts it to something I want. In this case
+to a special date format (note previously dates were just strings).
+'''
+
+# In Variable Explorer press on Plots tab, go to options (triple lines) on top 
+# right, untick 'Mute Inline Plotting', plots will be displayed in Console
+#plt.style.use('seaborn') 
+plt.figure(figsize = (12, 8)) 
+plt.plot_date(datesNew, prices, 'g-', label = "prices") 
+plt.ylabel("Price", fontsize = 15)
+plt.title('Adjusted Closing Prices Time Series', fontsize = 20)
+plt.xticks(fontsize = 12, rotation = 90)
+plt.yticks(fontsize = 12)
+plt.autoscale(enable = True, tight = True) # or for specific axis axis='x'
+plt.legend(loc = "upper left", fontsize = 15)
+plt.show()
+
+# HERE STARTS MY PART OF THE CODE
+
+# a) Initialise variables business days to 252 (call it busDays), and risk-free
+# rate to 0.0064 (call it rf) i.e. 0.64%.
+busDays = 252
+rf = 0.0064
+
+# b) Calculate simple returns and store results into a list (call it R) using 
+# a for loop, the list prices, and the list method append.
+N = len(prices)
+R = []
+
+daily_return = 0
+
+for i in range(N-1):
+    daily_return = (prices[i+1] - prices[i])/prices[i]
+    R.append(daily_return)
+
+# c) Obtain the length of the returns list and store it as variable N.
+N = len(R)    
+
+# d) Obtain the daily mean (call it muR) and the annualised mean (call it 
+# muR_annual). 
+# Hint: you may find the base distribution function sum() useful.
+muR = sum(R)/N
+muR_annual = muR * busDays
+
+# e) Calculate the daily variance of the simple returns (call it varR). 
+# Hint: # use a for loop to obtain the squared terms at each t. 
+# Following this calculate the daily volatility (call it sigmaR) and the 
+# annualised volatility (call it sigmaR_annual).
+squared_sums = []
+sqrd_sum = 0
+
+for i in range(N):
+    sqrd_sum = (R[i] - muR) ** 2
+    squared_sums.append(sqrd_sum)
+
+from math import sqrt
+varR = sum(squared_sums) / (N-1)
+sigmaR = sqrt(varR) 
+sigmaR_annual = sigmaR * sqrt(busDays)
+
+# f) Obtain the highest and lowest price time series points (call variables:
+# highPt, lowPt)
+highPt = max(prices)
+lowPt = min(prices)
+
+# g) Calculate the Sharpe Ratio of the time series using annualised statistics
+# (call it SR). Note: In the denominator consider the volatility of returns 
+# (it is no necessary to compute the volatility of excess returns since we are 
+# considering a constant risk-free rate over the sample).
+SR = (muR_annual - rf) / sigmaR_annual
+
+# REPORT RESULTS
+print("DAILY average simple return:", '%.7f' % muR, 
+      "\nANNUALISED average simple return:", 
+      '%.2f' % muR_annual, "\nSharpe:", '%.2f' % SR,
+      "\nHigh Point:", '%.2f' % highPt,
+      "\nLow Point:", '%.2f' % lowPt)
+
+# PASTE RESULTS FOR EACH COMPANY BELOW FOR YOUR RECORD:
+"""
+Facebook:
+    DAILY average simple return: 0.0010410 
+    ANNUALISED average simple return: 0.26 
+    Sharpe: 0.68 
+    High Point: 382.18 
+    Low Point: 17.73
+    
+Amazon:
+    DAILY average simple return: 0.0012886 
+    ANNUALISED average simple return: 0.32 
+    Sharpe: 1.05 
+    High Point: 3731.41 
+    Low Point: 208.22
+    
+B.H: 
+    DAILY average simple return: 0.0006763 
+    ANNUALISED average simple return: 0.17 
+    Sharpe: 0.88 
+    High Point: 359.57 
+    Low Point: 78.83
+"""
